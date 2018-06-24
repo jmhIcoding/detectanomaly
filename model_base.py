@@ -25,17 +25,19 @@ class Predictor:
                  feature_n=1,
                  windows_length=3,
                  predict_length=1,
-                 hidden_layers=[20,30]
+                 hidden_layers=[10,20]
     ):
         '''
-        :param modelname: a name to describe this predictor.
-        :param feature_n: the feature number of each element ,that is the rnn network 's frame_size.
-                For example:
-                input vector: [[1,2],[2,3],.....] then  the feature number is two.
-        :param windows_length: the look back size used when scanning the input vector.
-        :param predict_length:
-        :param hidden_layers:
-        :return:
+            :param modelname: a name to describe this predictor.
+            :param feature_n: the feature number of each element ,that is the rnn network 's frame_size.
+                    For example:
+                    input vector: [[1,2],[2,3],.....] then  the feature number is two.
+            :param windows_length: The look back size used when scanning the input vector.
+            :param predict_length: The predict length
+            :param hidden_layers:  The hidden layer units. This parameter should be a list of int,
+                    For example:hidden_layers=[20,30],indicts that there are two lstm layer stacking together,
+                    and the first lstm layer has 20 hidden units,where the second layer has 30 hidden units.
+            :return: self
         '''
         self.model_file=modelname+".mol"
         self.parameterfile =modelname+".para"
@@ -65,9 +67,12 @@ class Predictor:
                 self._model.compile(loss="mean_squared_error",optimizer="adam")
 
     def load_model(self,modelfile=None,parameterfile=None):
+        '''
         #load model from history file.
-        #modelfile is the weight parameter file.
-        #parameterfile should be the super parameter file,such as featurn_n ...
+            :param modelfile: modelfile is the weight parameter file.
+            :param parameterfile: parameterfile should be the super parameter file,such as featurn_n ...
+            :return:
+        '''
         if modelfile==None:
             modelfile = self.model_file
         if parameterfile == None:
@@ -106,41 +111,77 @@ class Predictor:
                       ,fp)
     def max_min_transform(self,_x):
         #max-min scalar
-        #convert a vector to 0-1,with the method (x[i]-min)/(max-min)
+        #convert a vector to 0-1,with the method (x[?][i]-min)/(max-min)
         x = _x.copy()
         for each in x:
             for i in range(self.feature_n):
-                self._min[i] = min(each[i],self._min[i])
-                self._max[i] = max(each[i],self._max[i])
+                self._min[i] = min(each[i]/2,self._min[i])
+                self._max[i] = max(each[i]*2,self._max[i])
         for j in range(len(x)):
             for i in range(self.feature_n):
-                x[j][i] =(x[j][i]-self._min[i])/(self._max[i]-self._min[i])
+                x[j][i] =(x[j][i]-self._min[i])/(self._max[i]-self._min[i]+0.000000001)
         return x
     def max_min_inverse_transform(self,_x):
+        #max-min scalar
+        #inverse convert a vector to min -max ,with the method (x[?][i]-min)/(max-min)
+        # the shape should be :(?,featurn_n)
         x = _x.copy()
         for j in range(len(x)):
             for i in range(self.feature_n):
                 x[j][i] =x[j][i]*(self._max[i]-self._min[i]) + self._min[i]
         return x
     def predict(self,x,y=None):
-        x = self.max_min_transform(x)
-        x = np.array([x])
+        #given self.windows_length elems to predict next sequence
+        # The Input Should be non-convert to 0-1
+        '''
+            :param x: given self.windows_length elems to predict next sequence.
+            :param y: reserved
+            :return:
+        '''
+        for i in range(len(x)):
+            x[i] = self.max_min_transform(x[i])
+        x = np.array(x)
         x = np.reshape( x,newshape=(x.shape[0],x.shape[1],self.feature_n))
         predicty = self._model.predict(x)
         #print(predicty)
         return predicty
+    def predict_once(self,x):
+        # predict only once ,that's : x should only include self.windows_length elem.
+        '''
+            For example :
+                windows_length :3
+                feature_n: 2
+                then the shape of x should be : (3,2)
+                the output's shape will be (predict_length,featurn_n)
+        '''
+        x = self.max_min_transform(x)
+        x = np.array([x])
+        x = np.reshape( x,newshape=(x.shape[0],x.shape[1],self.feature_n))
+        predicty = self._model.predict(x)
+        y = self.max_min_inverse_transform(predicty)[0]
+        return y
+
     def _gen_data(self,x):
         # according the input x vector,and the parameter windows_length,predict_length  to generate the pairs for
         #train or predict
         '''
             For examples:
-                x:[1,2,3,5,9,8,10,23]
+                x:[[1],[2],[3],[5],[9],[8],[10],[23]]
                 windows_length:3
                 predict_length:2
+                featurn_n   : 1
             Then the output should be:
-                ret_x:[[1,2,3],[2,3,5],[3,5,9],[5,9,8]]
-                ret_y:[ [5,9],  [9,8] ,[8,10],[10,23]]
-                because: [5,9] is the later two element behind [1,2,3] and so on.
+                ret_x:[[[1],[2],[3]],[[2],[3],[5]],[[3],[5],[9]],[[5],[9],[8]]]
+                ret_y:[ [[5],[9]],  [[9],[8]] ,[[8],[10]],[[10],[23]]]
+                because: [[5],[9]] is the later two element behind [[1],[2],[3]] and so on.
+            While this is another examples:
+                x:[[0, 0], [1, 2], [2, 4], [3, 6], [4, 8], [5, 10]]
+                windows_length:3
+                predict_length:1
+                feature_n   : 2
+            Then the output should be:
+                ret_x : [ [ [0,0],[1,2],[2,4] ],[ [1,2],[2,4],[3,6] ],[ [2,4],[3,6],[4,8] ]]
+                ret_y : [ [ [3,6] ],                [ [4,8] ],              [ [5,10] ] ]
         '''
         ret_x=[]
         ret_y=[]
@@ -166,26 +207,12 @@ x=[]
 for i in range(0,200):
     x.append([i,2*i])
 print(x)
-x[5]=[10,12]
 x = tool.max_min_transform(x)
 print(x)
 trainX,trainY=tool._gen_data(x)
 tool.train(trainX,trainY,epochs=200)
-y =tool.predict([[2,4],[3,6],[4,9]])
-y = tool.max_min_inverse_transform(y)
+y =tool.predict_once( [[198, 396], [199, 398], [200, 400]])
 print(y)
+#print(tool.predict_once( [[300, 396], [199, 398], [200, 400]]))
 print("#"*40)
 
-x=[]
-for i in range(0,200):
-    x.append([i,2*i])
-print(x)
-x[5]=[10,12]
-x = tool.max_min_transform(x)
-print(x)
-trainX,trainY=tool._gen_data(x)
-tool.train(trainX,trainY,epochs=300)
-y =tool.predict([[2,4],[3,6],[4,9]])
-y = tool.max_min_inverse_transform(y)
-print(y)
-print("#"*40)
